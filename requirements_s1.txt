@@ -1,0 +1,21 @@
+# Women Safety AI — Sprint 1 Dependencies
+# ──────────────────────────────────────────
+# STEP 1: Install PyTorch FIRST (separately):
+#   pip install torch==2.3.0+cu121 torchvision==0.18.0+cu121 torchaudio==2.3.0+cu121 \
+#     --index-url https://download.pytorch.org/whl/cu121
+#
+# STEP 2: Install this file:
+#   pip install -r requirements_s1.txt
+#
+# STEP 3: Install CLIP from GitHub:
+#   pip install git+https://github.com/openai/CLIP.git
+
+ultralytics==8.3.0
+timm==1.0.3
+lap==0.4.0
+opencv-python==4.10.0.84
+numpy==1.26.4
+Pillow==10.3.0
+python-dotenv==1.0.1
+pydantic==2.7.1
+pydantic-settings==2.2.1

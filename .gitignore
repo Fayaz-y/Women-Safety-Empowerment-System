@@ -1,0 +1,49 @@
+# ─── Environment ───
+.env
+.env.*
+
+# ─── Python ───
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ─── Virtual Environment ───
+venv/
+.venv/
+env/
+
+# ─── Models & Data ───
+*.pt
+*.onnx
+*.engine
+models/*.pt
+models/*.onnx
+models/*.engine
+models/onnx/
+*.mp4
+data/snapshots/*
+data/clips/*
+!data/snapshots/.gitkeep
+!data/clips/.gitkeep
+!models/onnx/.gitkeep
+
+# ─── IDE ───
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─── OS ───
+.DS_Store
+Thumbs.db
+
+# ─── Logs ───
+*.log
+logs/
+
+# ─── Docker volumes ───
+pg_data/
