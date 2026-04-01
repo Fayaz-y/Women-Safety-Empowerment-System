@@ -1,18 +1,24 @@
 """
-Women Safety AI — CLIP + EfficientNet-B0 Gender Classifier
-============================================================
+Women Safety AI — CLIP + Body-Proportion Gender Classifier
+=============================================================
 Ensemble gender classifier combining:
-  • CLIP ViT-B/32 (zero-shot: "a woman" vs "a man")
-  • EfficientNet-B0 (pre-trained / fine-tunable, 2-class)
+  • CLIP ViT-B/32 (zero-shot: "a woman" vs "a man")  — weight 0.55
+  • Body-proportion heuristics from pose keypoints     — weight 0.30
+  • EfficientNet-B0 (pretrained feature extractor)     — weight 0.15
 
-Both models run in FP16 on CUDA.  Results are cached per track_id
-and recomputed only every 10 frames to avoid redundant inference.
+Designed for CCTV surveillance angles where faces may not be visible.
+Body proportions (shoulder width, hip width, height ratios) provide
+robust gender signals from any camera angle.
+
+Results use temporal voting over 30 frames for stable classification.
 
 Usage:
     clf = GenderClassifier()
-    gender, conf = clf.classify(frame, bbox=[x1,y1,x2,y2], track_id=7)
+    gender, conf = clf.classify(frame, bbox=[x1,y1,x2,y2], track_id=7,
+                                 keypoints=kp_array)
 """
 
+from collections import deque
 from typing import Dict, Optional, Tuple
 
 import cv2
@@ -31,11 +37,17 @@ import timm
 
 
 class GenderClassifier:
-    """CLIP + EfficientNet-B0 ensemble for male / female / unknown."""
+    """CLIP + Body-proportion + EfficientNet ensemble for gender classification."""
 
     LABELS = ["female", "male"]
-    CONF_THRESHOLD = 0.75      # below this → "unknown"
-    RECLASSIFY_EVERY = 10      # re-run inference every N frames per track
+    CONF_THRESHOLD = 0.55           # lowered — body proportions compensate
+    RECLASSIFY_EVERY = 5            # more frequent than before for accuracy
+    TEMPORAL_WINDOW = 30            # frames for temporal voting
+
+    # Ensemble weights
+    W_CLIP = 0.55
+    W_BODY = 0.30
+    W_EFFNET = 0.15
 
     def __init__(
         self,
@@ -57,10 +69,6 @@ class GenderClassifier:
         if self.device == "cuda":
             self.effnet = self.effnet.half()
         self.effnet.eval()
-        import sys
-        if hasattr(torch, "compile") and sys.platform != "win32":
-            self.effnet = torch.compile(self.effnet, mode="reduce-overhead")
-            print(f"[{self.__class__.__name__}] torch.compile applied (EfficientNet-B0)")
 
         # ImageNet normalisation transform for EfficientNet
         self._eff_transform = transforms.Compose([
@@ -79,8 +87,14 @@ class GenderClassifier:
                 "ViT-B/32", device=self.device
             )
             self.clip_model.eval()
-            # Pre-compute text features (done once, reused every call)
-            text_tokens = clip.tokenize(["a woman", "a man"]).to(self.device)
+            # Enhanced prompts for full-body CCTV views
+            prompts = [
+                "a woman walking",
+                "a female person standing",
+                "a man walking",
+                "a male person standing",
+            ]
+            text_tokens = clip.tokenize(prompts).to(self.device)
             with torch.no_grad():
                 self._text_feats = self.clip_model.encode_text(text_tokens)
                 self._text_feats = self._text_feats / self._text_feats.norm(
@@ -91,9 +105,10 @@ class GenderClassifier:
             self.clip_preprocess = None
             self._text_feats = None
 
-        # ── Caches ──────────────────────────────────────────────────────
+        # ── Caches & temporal voting ─────────────────────────────────────
         self._cache: Dict[int, Tuple[str, float]] = {}
         self._counters: Dict[int, int] = {}
+        self._vote_history: Dict[int, deque] = {}  # track_id → deque of (p_female, p_male)
 
     # ── public API ──────────────────────────────────────────────────────
     def classify(
@@ -101,14 +116,16 @@ class GenderClassifier:
         frame: np.ndarray,
         bbox: list,
         track_id: int,
+        keypoints: Optional[np.ndarray] = None,
     ) -> Tuple[str, float]:
         """
         Classify a tracked person's gender.
 
         Args:
-            frame:    Full BGR frame from camera.
-            bbox:     [x1, y1, x2, y2] bounding box.
-            track_id: Persistent track ID from the tracker.
+            frame:     Full BGR frame from camera.
+            bbox:      [x1, y1, x2, y2] bounding box.
+            track_id:  Persistent track ID from the tracker.
+            keypoints: Optional (17, 3) pose keypoints for body proportions.
 
         Returns:
             (gender, confidence) — gender is "female", "male", or "unknown".
@@ -144,28 +161,140 @@ class GenderClassifier:
         # ── CLIP forward pass ──────────────────────────────────────────
         clip_probs = self._run_clip(pil_img)
 
-        # ── Ensemble: 50 / 50 weighted average ────────────────────────
+        # ── Body-proportion heuristics ─────────────────────────────────
+        body_probs = self._body_proportions(keypoints, bbox)
+
+        # ── Weighted ensemble ──────────────────────────────────────────
+        p_female = self.W_EFFNET * eff_probs[0]
+        p_male = self.W_EFFNET * eff_probs[1]
+
         if clip_probs is not None:
-            p_female = 0.5 * eff_probs[0] + 0.5 * clip_probs[0]
-            p_male = 0.5 * eff_probs[1] + 0.5 * clip_probs[1]
+            p_female += self.W_CLIP * clip_probs[0]
+            p_male += self.W_CLIP * clip_probs[1]
         else:
-            # CLIP not installed — EfficientNet only
-            p_female = eff_probs[0]
-            p_male = eff_probs[1]
+            # Without CLIP, redistribute weight
+            p_female += self.W_CLIP * eff_probs[0]
+            p_male += self.W_CLIP * eff_probs[1]
+
+        if body_probs is not None:
+            p_female += self.W_BODY * body_probs[0]
+            p_male += self.W_BODY * body_probs[1]
+        else:
+            # Without keypoints, redistribute
+            if clip_probs is not None:
+                p_female += self.W_BODY * clip_probs[0]
+                p_male += self.W_BODY * clip_probs[1]
+            else:
+                p_female += self.W_BODY * eff_probs[0]
+                p_male += self.W_BODY * eff_probs[1]
+
+        # ── Temporal voting ────────────────────────────────────────────
+        if track_id not in self._vote_history:
+            self._vote_history[track_id] = deque(maxlen=self.TEMPORAL_WINDOW)
+        self._vote_history[track_id].append((p_female, p_male))
+
+        # Average over temporal window
+        votes = self._vote_history[track_id]
+        avg_female = sum(v[0] for v in votes) / len(votes)
+        avg_male = sum(v[1] for v in votes) / len(votes)
 
         # ── Decision ───────────────────────────────────────────────────
-        max_prob = max(p_female, p_male)
+        max_prob = max(avg_female, avg_male)
         if max_prob < self.CONF_THRESHOLD:
             result = ("unknown", float(max_prob))
-        elif p_female >= p_male:
-            result = ("female", float(p_female))
+        elif avg_female >= avg_male:
+            result = ("female", float(avg_female))
         else:
-            result = ("male", float(p_male))
+            result = ("male", float(avg_male))
 
         self._cache[track_id] = result
         return result
 
     # ── private helpers ─────────────────────────────────────────────────
+
+    def _body_proportions(
+        self, keypoints: Optional[np.ndarray], bbox: list
+    ) -> Optional[list]:
+        """
+        Estimate gender from body proportions using pose keypoints.
+
+        Uses shoulder-to-hip ratio, torso proportions, and overall
+        body shape — works regardless of camera angle.
+
+        Returns [P(female), P(male)] or None if keypoints unavailable.
+        """
+        if keypoints is None or len(keypoints) < 17:
+            return None
+
+        KP_CONF = 0.4
+
+        def kp_valid(idx):
+            return float(keypoints[idx][2]) >= KP_CONF
+
+        def kp_xy(idx):
+            return float(keypoints[idx][0]), float(keypoints[idx][1])
+
+        # Need shoulders and hips
+        if not (kp_valid(5) and kp_valid(6) and kp_valid(11) and kp_valid(12)):
+            return None
+
+        l_shoulder = kp_xy(5)
+        r_shoulder = kp_xy(6)
+        l_hip = kp_xy(11)
+        r_hip = kp_xy(12)
+
+        shoulder_width = abs(l_shoulder[0] - r_shoulder[0])
+        hip_width = abs(l_hip[0] - r_hip[0])
+
+        if shoulder_width < 5 or hip_width < 5:
+            return None
+
+        # Shoulder-to-hip ratio: males ~1.3+, females ~1.0 or lower
+        sh_ratio = shoulder_width / hip_width
+
+        # Torso length (avg shoulder y to avg hip y)
+        torso_len = abs(
+            (l_shoulder[1] + r_shoulder[1]) / 2 -
+            (l_hip[1] + r_hip[1]) / 2
+        )
+
+        # Bbox aspect ratio (height / width)
+        bbox_h = bbox[3] - bbox[1]
+        bbox_w = bbox[2] - bbox[0]
+        aspect = bbox_h / max(bbox_w, 1)
+
+        # Score computation
+        # Males: wider shoulders relative to hips, boxier build
+        # Females: more equal or wider hips, taller aspect ratio
+        male_score = 0.0
+
+        if sh_ratio > 1.25:
+            male_score += 0.4
+        elif sh_ratio > 1.10:
+            male_score += 0.2
+        elif sh_ratio < 0.95:
+            male_score -= 0.3  # wider hips → female indicator
+
+        # Wider build (lower aspect ratio) → male indicator
+        if aspect < 2.5:
+            male_score += 0.15
+        elif aspect > 3.2:
+            male_score -= 0.15
+
+        # Shoulder width relative to bbox width
+        shoulder_ratio = shoulder_width / max(bbox_w, 1)
+        if shoulder_ratio > 0.4:
+            male_score += 0.15
+        elif shoulder_ratio < 0.28:
+            male_score -= 0.15
+
+        # Convert to probability
+        p_male = 0.5 + male_score
+        p_male = max(0.1, min(0.9, p_male))
+        p_female = 1.0 - p_male
+
+        return [p_female, p_male]
+
     @torch.no_grad()
     def _run_efficientnet(self, pil_img: Image.Image) -> list:
         """Return [P(female), P(male)] from EfficientNet-B0."""
@@ -186,4 +315,12 @@ class GenderClassifier:
         image_feats = image_feats / image_feats.norm(dim=-1, keepdim=True)
         similarity = (image_feats @ self._text_feats.T).squeeze(0)
         probs = F.softmax(similarity * 100.0, dim=0).float().cpu().numpy()
-        return [float(probs[0]), float(probs[1])]
+        # prompts 0,1 = female; prompts 2,3 = male → average each pair
+        p_female = float((probs[0] + probs[1]) / 2)
+        p_male = float((probs[2] + probs[3]) / 2)
+        # Renormalize
+        total = p_female + p_male
+        if total > 0:
+            p_female /= total
+            p_male /= total
+        return [p_female, p_male]
