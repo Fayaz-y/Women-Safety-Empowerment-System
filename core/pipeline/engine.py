@@ -41,6 +41,7 @@ from core.anomaly.detector import AnomalyDetector
 from core.context.clip_context import CLIPContext
 from core.fusion.fusion import FusionLayer, FusionInput
 from core.pipeline.annotator import FrameAnnotator
+from core.pipeline.clip_saver import ClipSaver
 
 
 class PipelineEngine:
@@ -69,6 +70,9 @@ class PipelineEngine:
         self._last_annotated: Optional[np.ndarray] = None
         self._lock = threading.Lock()
         self._alert_cooldowns: Dict[int, float] = {}
+        
+        # Video clip saver
+        self.clip_saver = ClipSaver(clip_dir=settings.clip_dir)
 
     # ── Model loading ─────────────────────────────────────────────────────────
 
@@ -146,7 +150,9 @@ class PipelineEngine:
 
         # 10. Fusion layer
         print("[10/11] FusionLayer ...")
-        self.fusion = FusionLayer()
+        # Use configurable threshold from settings (default 0.75, lower for more sensitivity)
+        from config.settings import settings
+        self.fusion = FusionLayer(threshold=settings.fusion_threshold)
         print(f"        ✓ VRAM: {_vram_gb():.2f} GB")
 
         # 11. Frame annotator
@@ -323,7 +329,7 @@ class PipelineEngine:
 
             # ── Annotate frame ─────────────────────────────────────────────
             annotated = self.annotator.annotate(
-                frame=annotated,
+                frame=frame,
                 persons=persons,
                 threat_scores=threat_scores,
                 lone_woman_ids=lone_ids,
@@ -332,6 +338,9 @@ class PipelineEngine:
                 fps=self.stream.fps,
                 frame_count=frame_count,
             )
+
+            # ── Buffer frame for clip saving ──────────────────────────────
+            self.clip_saver.add_frame(annotated)
 
             # ── Store annotated frame (thread-safe) ───────────────────────
             with self._lock:
@@ -378,9 +387,23 @@ class PipelineEngine:
                 "woman_track_id": woman_track_id,
                 "timestamp":      now,
                 "frame":          frame,
+                "clip_path":      self._save_incident_clip(
+                    incident_type, woman_track_id, boosted_score
+                ),
             })
 
     # ── Annotated frame access ────────────────────────────────────────────────
+
+    def _save_incident_clip(
+        self, incident_type: str, woman_track_id: int, fusion_score: float
+    ) -> Optional[str]:
+        """Save the buffered frames as an MP4 clip with incident labels."""
+        return self.clip_saver.save_clip(
+            incident_type=incident_type,
+            camera_id=self.camera_id,
+            fusion_score=fusion_score,
+            woman_track_id=woman_track_id,
+        )
 
     def get_annotated_frame(self) -> Optional[np.ndarray]:
         """Return a copy of the latest annotated frame (thread-safe)."""

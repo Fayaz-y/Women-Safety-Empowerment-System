@@ -32,7 +32,7 @@ async def endpoint(websocket: WebSocket, camera_id: int):
         while True:
             frame = engine.get_annotated_frame()
             if frame is None:
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.1)  # Increased from 0.05
                 continue
 
             _, buf = cv2.imencode(
@@ -42,6 +42,6 @@ async def endpoint(websocket: WebSocket, camera_id: int):
             await websocket.send_json(
                 {"camera_id": camera_id, "frame": b64}
             )
-            await asyncio.sleep(1 / 15)  # ~15 FPS target
+            await asyncio.sleep(1 / 10)  # Reduced to 10 FPS
     except WebSocketDisconnect:
         pass  # client disconnected

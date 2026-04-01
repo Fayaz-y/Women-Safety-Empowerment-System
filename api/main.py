@@ -35,6 +35,7 @@ def _start_camera_engines():
     import torch
     from config.settings import settings
     from core.pipeline.engine import PipelineEngine
+    from core.pipeline.batch_processor import BatchVideoProcessor
     from alerts.dispatcher import dispatch_alert
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -43,15 +44,29 @@ def _start_camera_engines():
     #   0 = laptop webcam (device index 0)
     #   1 = external USB cam (device index 1)
     #   2 = video file (path from CAMERA_SOURCE_PATH)
+    
+    # Special handling for batch video processing (toggle=2)
     if settings.camera_toggle == 2:
         source = settings.camera_source_path
         if not source:
             print("[ERROR] CAMERA_TOGGLE=2 but CAMERA_SOURCE_PATH is empty!")
             return
-        print(f"[Camera] Mode: video file → {source}")
-    else:
-        source = settings.camera_toggle  # 0 or 1
-        print(f"[Camera] Mode: device index {source}")
+        
+        print(f"[BATCH MODE] Processing video file: {source}")
+        print("[BATCH MODE] No WebSocket streaming — saving results to disk\n")
+        
+        try:
+            processor = BatchVideoProcessor(video_path=source, device=device)
+            processor.process()
+            print("\n[BATCH MODE] ✓ Video processing complete!")
+            return
+        except Exception as e:
+            print(f"[BATCH MODE] ✗ Error: {e}")
+            return
+    
+    # Normal live camera streaming (toggle=0 or 1)
+    source = settings.camera_toggle  # 0 or 1
+    print(f"[Camera] Mode: device index {source}")
 
     CAMERAS = [
         {"camera_id": 1, "source": source},
