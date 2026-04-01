@@ -4,29 +4,49 @@ Women Safety AI — Non-Blocking Alert Dispatcher
 Enqueues alert jobs to Redis/RQ so the inference thread is never
 blocked by SMS sending or database writes.
 
-Run the worker process::
+On Windows, RQ is not supported (requires 'fork'). In that case
+alerts are processed synchronously in-process — this is fine for
+single-server deployments.
+
+Run the worker process (Linux/macOS only)::
 
     python -m alerts.dispatcher
 """
 
 import os
+import sys
 import time
 from datetime import datetime
 
 import cv2
 import redis as redis_lib
-import rq
 
 from config.settings import settings
 
 _redis_conn = None
 _alert_queue = None
+_rq_available = None  # lazy-checked
 
 
-def _get_queue() -> rq.Queue:
+def _check_rq():
+    """Return True if rq can be imported (Linux/macOS only)."""
+    global _rq_available
+    if _rq_available is None:
+        try:
+            import rq as _rq  # noqa: F401
+            _rq_available = True
+        except (ImportError, ValueError):
+            # ValueError: 'cannot find context for fork' on Windows
+            _rq_available = False
+            print("  [INFO] RQ not available (Windows). Alerts will be processed synchronously.")
+    return _rq_available
+
+
+def _get_queue():
     """Lazy-init Redis connection and RQ queue named 'alerts'."""
     global _redis_conn, _alert_queue
     if _alert_queue is None:
+        import rq
         _redis_conn = redis_lib.Redis.from_url(settings.redis_url)
         _alert_queue = rq.Queue("alerts", connection=_redis_conn)
     return _alert_queue
@@ -38,7 +58,8 @@ def dispatch_alert(alert_payload: dict):
 
     1. Saves snapshot frame to disk (if present).
     2. Strips the non-serializable ``frame`` numpy array.
-    3. Enqueues ``_process_alert_job`` on the ``alerts`` queue.
+    3. Enqueues ``_process_alert_job`` on the ``alerts`` queue,
+       or processes synchronously if RQ/Redis is unavailable.
     """
     payload = dict(alert_payload)  # shallow copy
 
@@ -52,20 +73,27 @@ def dispatch_alert(alert_payload: dict):
         cv2.imwrite(snapshot_path, frame)
         payload["snapshot_path"] = snapshot_path
 
-    try:
-        _get_queue().enqueue(
-            _process_alert_job,
-            payload,
-            job_timeout=30,
-        )
-    except (redis_lib.exceptions.ConnectionError, ConnectionRefusedError):
-        print("  [WARN] Redis is not running. Processing alert synchronously instead of using RQ.")
-        _process_alert_job(payload)
+    # Try RQ queue, fall back to synchronous processing
+    if _check_rq():
+        try:
+            _get_queue().enqueue(
+                _process_alert_job,
+                payload,
+                job_timeout=30,
+            )
+            return
+        except (redis_lib.exceptions.ConnectionError, ConnectionRefusedError):
+            print("  [WARN] Redis is not running. Processing alert synchronously.")
+        except Exception as e:
+            print(f"  [WARN] RQ enqueue failed: {e}. Processing synchronously.")
+
+    # Synchronous fallback
+    _process_alert_job(payload)
 
 
 def _process_alert_job(payload: dict):
     """
-    Runs inside an RQ worker process.
+    Runs inside an RQ worker process (or synchronously on Windows).
 
     1. Opens a DB session.
     2. Creates an ``Incident`` row with all model scores.
@@ -138,7 +166,12 @@ def _process_alert_job(payload: dict):
 
 
 def start_worker():
-    """Entry point for the RQ worker process."""
+    """Entry point for the RQ worker process (Linux/macOS only)."""
+    if sys.platform == "win32":
+        print("[ERROR] RQ workers are not supported on Windows.")
+        print("        Alerts are processed synchronously when running on Windows.")
+        return
+    import rq
     conn = redis_lib.Redis.from_url(settings.redis_url)
     worker = rq.Worker(["alerts"], connection=conn)
     worker.work()
@@ -146,3 +179,4 @@ def start_worker():
 
 if __name__ == "__main__":
     start_worker()
+

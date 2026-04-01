@@ -28,8 +28,12 @@ export default function LiveMonitor() {
           headers: { Authorization: `Bearer ${token}` },
         });
         setCameras(res.data);
-      } catch (err) {
+      } catch (err: any) {
         console.error("Error fetching cameras:", err);
+        if (err.response?.status === 401) {
+          localStorage.removeItem("access_token");
+          router.push("/login");
+        }
       } finally {
         setLoading(false);
       }

@@ -12,15 +12,15 @@ export default function AlertBanner() {
     const alerts = useAppStore((s) => s.alerts);
 
     const latestAlert = alerts[0];
-    const isSetup = useRef(false);
-
     useEffect(() => {
-        if (isSetup.current) return;
-        isSetup.current = true;
+        let isClosing = false;
+        let ws: WebSocket | null = null;
+        let pingInterval: NodeJS.Timeout;
 
         const connectWs = () => {
+            if (isClosing) return;
             const wsUrl = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
-            const ws = new WebSocket(`${wsUrl}/ws/alerts`);
+            ws = new WebSocket(`${wsUrl}/ws/alerts`);
             wsRef.current = ws;
 
             ws.onmessage = (event) => {
@@ -42,23 +42,24 @@ export default function AlertBanner() {
             };
 
             ws.onclose = () => {
-                setTimeout(() => connectWs(), 3000);
+                if (!isClosing) setTimeout(() => connectWs(), 3000);
             };
         };
 
         connectWs();
 
-        const pingInterval = setInterval(() => {
-            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                wsRef.current.send("ping");
+        pingInterval = setInterval(() => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send("ping");
             }
         }, 30000);
 
         return () => {
+            isClosing = true;
             clearInterval(pingInterval);
-            if (wsRef.current) {
-                wsRef.current.onclose = null;
-                wsRef.current.close();
+            if (ws) {
+                ws.onclose = null;
+                ws.close();
             }
         };
     }, [addAlert]);

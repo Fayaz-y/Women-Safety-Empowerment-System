@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Union
 
 import numpy as np
 import torch
@@ -49,7 +49,7 @@ class PipelineEngine:
     def __init__(
         self,
         camera_id: int,
-        source: int,
+        source: Union[int, str],
         on_alert: Optional[Callable[[dict], None]] = None,
         device: str = "cuda",
         shared_models: dict = None,

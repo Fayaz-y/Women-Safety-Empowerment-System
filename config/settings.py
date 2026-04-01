@@ -58,6 +58,17 @@ class Settings(BaseSettings):
     twilio_from_number: str = Field(default="", description="Twilio sender phone")
     alert_phone_number: str = Field(default="", description="Recipient phone number")
 
+    # ── Camera ──
+    camera_toggle: int = Field(
+        default=0,
+        description="0 = laptop webcam, 1 = external USB cam, 2 = video file",
+    )
+    camera_source_path: str = Field(
+        default="",
+        description="Path to video file (used when camera_toggle=2)",
+    )
+
+
     # ── JWT Auth ──
     jwt_secret_key: str = Field(
         default="change-me-in-production-minimum-32-chars",

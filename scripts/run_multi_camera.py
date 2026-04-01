@@ -16,11 +16,10 @@ import time
 
 import torch
 
-# ── Camera configuration ─────────────────────────────────────────────────────
-# Read-only for V1.  Future: load from DB via GET /api/v1/cameras.
+from config.settings import settings
 
 CAMERAS = [
-    {"camera_id": 1, "source": 0},
+    {"camera_id": 1, "source": settings.camera_toggle},
     # {"camera_id": 2, "source": 1}, # Commented out for users with only 1 webcam
 ]
 

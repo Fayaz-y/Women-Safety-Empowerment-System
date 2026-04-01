@@ -30,44 +30,48 @@ function CameraCell({ camera }: { camera: CameraInfo }) {
         (s) => (s.cameraFps[camera.id] || []).slice(-1)[0] || 0
     );
 
-    const connectWs = useCallback(() => {
-        const wsUrl = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
-        const ws = new WebSocket(`${wsUrl}/ws/stream/${camera.id}`);
-        wsRef.current = ws;
-
-        ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                if (data.error) return;
-
-                const img = new Image();
-                img.onload = () => {
-                    const canvas = canvasRef.current;
-                    if (!canvas) return;
-                    const ctx = canvas.getContext("2d");
-                    if (!ctx) return;
-                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                };
-                img.src = "data:image/jpeg;base64," + data.frame;
-
-                // FPS counting
-                fpsCountRef.current++;
-            } catch {
-                // ignore parse errors
-            }
-        };
-
-        ws.onclose = () => {
-            // Reconnect after 3 seconds
-            setTimeout(() => {
-                if (wsRef.current === ws) connectWs();
-            }, 3000);
-        };
-
-        ws.onerror = () => ws.close();
-    }, [camera.id]);
-
     useEffect(() => {
+        let isClosing = false;
+        let ws: WebSocket | null = null;
+        let reconnectTimeout: NodeJS.Timeout;
+
+        const connectWs = () => {
+            if (isClosing) return;
+            const wsUrl = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
+            ws = new WebSocket(`${wsUrl}/ws/stream/${camera.id}`);
+            wsRef.current = ws;
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.error) return;
+
+                    const img = new Image();
+                    img.onload = () => {
+                        const canvas = canvasRef.current;
+                        if (!canvas) return;
+                        const ctx = canvas.getContext("2d");
+                        if (!ctx) return;
+                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                    };
+                    img.src = "data:image/jpeg;base64," + data.frame;
+
+                    // FPS counting
+                    fpsCountRef.current++;
+                } catch {
+                    // ignore parse errors
+                }
+            };
+
+            ws.onclose = () => {
+                if (!isClosing) {
+                    reconnectTimeout = setTimeout(() => connectWs(), 3000);
+                }
+            };
+
+            ws.onerror = () => ws?.close();
+        };
+
         connectWs();
 
         // FPS timer — push reading every second
@@ -75,16 +79,18 @@ function CameraCell({ camera }: { camera: CameraInfo }) {
             pushFps(camera.id, fpsCountRef.current);
             fpsCountRef.current = 0;
         }, 1000);
-        fpsTimerRef.current = interval;
 
         return () => {
-            window.clearInterval(fpsTimerRef.current);
-            if (wsRef.current) {
-                wsRef.current.onclose = null; // prevent reconnect
-                wsRef.current.close();
+            isClosing = true;
+            clearTimeout(reconnectTimeout);
+            window.clearInterval(interval);
+            if (ws) {
+                ws.onclose = null; // prevent reconnect
+                ws.onerror = null;
+                ws.close();
             }
         };
-    }, [camera.id, connectWs, pushFps]);
+    }, [camera.id, pushFps]);
 
     return (
         <div className="camera-cell">
