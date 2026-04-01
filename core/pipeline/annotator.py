@@ -68,49 +68,6 @@ def _draw_badge(
     cv2.putText(img, text, (x + pad, y - pad), FONT, 0.45, text_colour, 1, cv2.LINE_AA)
 
 
-def _draw_optical_flow(
-    img: np.ndarray, flow: Optional[np.ndarray], step: int = 15, magnitude_threshold: float = 0.5
-) -> None:
-    """
-    Draw optical flow vectors on the frame to visualize motion/feature mapping.
-    
-    Args:
-        img: Input frame (modified in-place)
-        flow: Optical flow from RAFT (or None to skip)
-        step: Step size for drawing arrows (larger = sparser)
-        magnitude_threshold: Minimum flow magnitude to draw
-    """
-    if flow is None:
-        return
-    
-    h, w = img.shape[:2]
-    
-    # Create a grid of flow vectors
-    for y in range(0, h, step):
-        for x in range(0, w, step):
-            if y < flow.shape[0] and x < flow.shape[1]:
-                fx, fy = flow[y, x]
-                mag = np.sqrt(fx**2 + fy**2)
-                
-                if mag > magnitude_threshold:
-                    # Normalize the vector for visualization
-                    scale = min(mag / 10.0, 1.0)  # Normalize to avoid huge arrows
-                    
-                    x2 = int(x + fx * 2)
-                    y2 = int(y + fy * 2)
-                    
-                    # Colour based on magnitude (green=low, yellow=medium, red=high)
-                    if mag < 2.0:
-                        colour = COL_GREEN
-                    elif mag < 5.0:
-                        colour = COL_YELLOW
-                    else:
-                        colour = COL_RED
-                    
-                    # Draw arrow
-                    cv2.arrowedLine(img, (x, y), (x2, y2), colour, 1, tipLength=0.3)
-
-
 class FrameAnnotator:
     """Draws all visual annotations onto a video frame."""
 
