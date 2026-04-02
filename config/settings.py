@@ -68,6 +68,29 @@ class Settings(BaseSettings):
         description="Path to video file (used when camera_toggle=2)",
     )
 
+    # ── API / Networking ──
+    api_url: str = Field(
+        default="http://localhost:8000",
+        description="Backend API URL (for Cloudflare tunneling)",
+    )
+    allowed_origins: str = Field(
+        default="http://localhost:3000",
+        description="Comma-separated CORS allowed origins",
+    )
+
+    # ── Model Inference (Remote) ──
+    use_remote_model: bool = Field(
+        default=False,
+        description="If True, use remote model via MODEL_API_URL instead of loading locally",
+    )
+    model_api_url: str = Field(
+        default="http://localhost:9000",
+        description="Remote model inference server URL (e.g., https://model.yourdomain.com)",
+    )
+    model_api_timeout: int = Field(
+        default=30,
+        description="Timeout in seconds for model API requests",
+    )
 
     # ── JWT Auth ──
     jwt_secret_key: str = Field(
