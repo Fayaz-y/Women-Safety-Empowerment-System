@@ -31,7 +31,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from core.detection.detector import YOLODetector
+from core.detection.detector import PersonDetector
 from core.assault.detector import AssaultDetector
 from core.gender.classifier import GenderClassifier
 from core.proximity.engine import ProximityEngine
@@ -72,23 +72,23 @@ async def lifespan(app: FastAPI):
     try:
         # Load detection model (YOLOv11)
         print("[Model Server] Loading YOLO detection model...")
-        MODELS["detection"] = YOLODetector(device=device, model_dir="./models")
+        MODELS["detection"] = PersonDetector(device=device, model_name="yolo11n.pt")
 
         # Load assault detection model
         print("[Model Server] Loading assault detection model...")
-        MODELS["assault"] = AssaultDetector(device=device, model_dir="./models")
+        MODELS["assault"] = AssaultDetector(device=device)
 
         # Load gender classifier
         print("[Model Server] Loading gender classifier...")
-        MODELS["gender"] = GenderClassifier(device=device, model_dir="./models")
+        MODELS["gender"] = GenderClassifier(device=device)
 
         # Load pose estimator
         print("[Model Server] Loading pose estimator...")
-        MODELS["pose"] = PoseEstimator(device=device, model_dir="./models")
+        MODELS["pose"] = PoseEstimator(device=device)
 
         # Initialize proximity engine (stateless but needs config)
         print("[Model Server] Initializing proximity engine...")
-        MODELS["proximity"] = ProximityEngine(proximity_radius_px=150)
+        MODELS["proximity"] = ProximityEngine(radius_px=150)
 
         print("[Model Server] ✓ All models loaded successfully!\n")
         
@@ -159,24 +159,21 @@ async def detect_persons(request: DetectionRequest):
         if image is None:
             raise ValueError("Could not decode image")
 
-        # Run detection
-        detections = MODELS["detection"].infer(
-            image,
-            conf_threshold=request.confidence_threshold,
-        )
+        # Run detection (PersonDetector.detect returns List[Detection])
+        detections = MODELS["detection"].detect(image)
 
         # Format response
         results = []
         for det in detections:
             results.append({
-                "class_id": int(det.cls),
-                "class_name": det.names.get(int(det.cls), "unknown"),
-                "confidence": float(det.conf),
+                "class_id": 0,  # Always person
+                "class_name": "person",
+                "confidence": det.confidence,
                 "box": {
-                    "x1": float(det.xyxy[0][0]),
-                    "y1": float(det.xyxy[0][1]),
-                    "x2": float(det.xyxy[0][2]),
-                    "y2": float(det.xyxy[0][3]),
+                    "x1": det.bbox[0],
+                    "y1": det.bbox[1],
+                    "x2": det.bbox[2],
+                    "y2": det.bbox[3],
                 },
             })
 
