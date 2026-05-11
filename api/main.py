@@ -33,9 +33,10 @@ def _start_camera_engines():
     """Start one PipelineEngine per configured camera."""
     import time
     import torch
+    import os
+    import sys
     from config.settings import settings
     from core.pipeline.engine import PipelineEngine
-    from core.pipeline.batch_processor import BatchVideoProcessor
     from alerts.dispatcher import dispatch_alert
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -43,30 +44,27 @@ def _start_camera_engines():
     # Determine camera source based on CAMERA_TOGGLE
     #   0 = laptop webcam (device index 0)
     #   1 = external USB cam (device index 1)
-    #   2 = video file (path from CAMERA_SOURCE_PATH)
+    #   2 = looped video file streaming (continuous via WebSocket)
     
-    # Special handling for batch video processing (toggle=2)
+    # Handle video file mode (toggle=2) — continuous streaming, not batch
     if settings.camera_toggle == 2:
         source = settings.camera_source_path
         if not source:
-            print("[ERROR] CAMERA_TOGGLE=2 but CAMERA_SOURCE_PATH is empty!")
+            print("[ERROR] CAMERA_TOGGLE=2 but CAMERA_SOURCE_PATH is empty!", flush=True)
             return
         
-        print(f"[BATCH MODE] Processing video file: {source}")
-        print("[BATCH MODE] No WebSocket streaming — saving results to disk\n")
+        # Verify file exists
+        if not os.path.isfile(source):
+            print(f"[ERROR] Video file not found: {source}", flush=True)
+            return
         
-        try:
-            processor = BatchVideoProcessor(video_path=source, device=device)
-            processor.process()
-            print("\n[BATCH MODE] ✓ Video processing complete!")
-            return
-        except Exception as e:
-            print(f"[BATCH MODE] ✗ Error: {e}")
-            return
-    
-    # Normal live camera streaming (toggle=0 or 1)
-    source = settings.camera_toggle  # 0 or 1
-    print(f"[Camera] Mode: device index {source}")
+        print(f"[STREAMING] Using looped video file: {source}", flush=True)
+        print("[STREAMING] Video will loop continuously and stream via WebSocket\n", flush=True)
+        # Source is now the file path for continuous looped streaming
+    else:
+        # Normal live camera streaming (toggle=0 or 1)
+        source = settings.camera_toggle  # 0 or 1
+        print(f"[STREAMING] Mode: device index {source}", flush=True)
 
     CAMERAS = [
         {"camera_id": 1, "source": source},
@@ -82,7 +80,7 @@ def _start_camera_engines():
     for cfg in CAMERAS:
         cam_id = cfg["camera_id"]
         source = cfg["source"]
-        print(f"\n--- Starting engine for Camera {cam_id} (source={source}) ---")
+        print(f"\n--- Starting engine for Camera {cam_id} (source={source}) ---", flush=True)
 
         engine = PipelineEngine(
             camera_id=cam_id,
@@ -95,7 +93,7 @@ def _start_camera_engines():
         ENGINES[cam_id] = engine
         time.sleep(1)
 
-    print("\n[API] All camera engines started and registered.\n")
+    print("\n[API] All camera engines started and registered.\n", flush=True)
 
 
 # ── Lifespan ─────────────────────────────────────────────────────────────────
@@ -146,4 +144,10 @@ app.add_api_websocket_route("/ws/alerts", alerts_endpoint)
 
 @app.get("/")
 def root():
-    return {"service": "Women Safety AI API", "version": "1.0.0"}
+    from api.websocket.stream import ENGINES
+    return {
+        "service": "Women Safety AI API",
+        "version": "1.0.0",
+        "engines_loaded": list(ENGINES.keys()),
+        "engine_ready": 1 in ENGINES and ENGINES[1] is not None
+    }
